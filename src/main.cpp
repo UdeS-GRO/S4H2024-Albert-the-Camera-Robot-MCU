@@ -124,6 +124,13 @@ void loop() {
 }
 
 void motorUpdateCall(){
+    if(digitalRead(ESTOP)){
+        estop = true;
+    }
+    else{
+        estop = false;
+    }
+    
     //Check if limit switches allow motor to move
     bool allowed = false;
     bool limIn = digitalRead(LIM_IN);
@@ -161,11 +168,6 @@ void motorUpdateCall(){
     else{
         motor2.writeMicroseconds(1500);
         motor2.writeMicroseconds(1500);
-    }
-
-
-    if(!digitalRead(ESTOP)){
-        estop = false;
     }
 }
 
