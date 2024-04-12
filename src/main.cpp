@@ -3,8 +3,8 @@
 #include <ArduinoJson.h>
 #include <Servo.h>
 #include <TaskScheduler.h>
-
-int x;
+#include "ICM20600.h"
+#include <Wire.h>
  
 /*--------------------------- Constantes ----------------------------*/
  
@@ -14,12 +14,20 @@ int x;
 #define PIN_MOT2         6
 #define PIN_MOT3         7
 
+#define LIM_IN           22
+#define LIM_OUT          23
+
+#define ESTOP            2
+
 
 /*------------------------- Globale variables -------------------------*/
 //PPM motor outputs 
 Servo motor1;
 Servo motor2;
 Servo motor3;
+
+//Gyro
+ICM20600 icm20600(true);
  
 // Xbox Controller input variables
 float LeftJoystickX_    = 0;
@@ -43,17 +51,28 @@ bool  DownDpad_         = 0;
 bool  BackButton_       = 0;
 bool  StartButton_      = 0;
 float M1, M2, M3;
-bool BackButtonAct_     ;
+bool BackButtonAct_     = false;
+bool LimitIn_, LimitOut_    ;
+float GyroX_ = 0.0;
+float GyroY_ = 0.0;
+float GyroZ_ = 0.0;
+
+//Emergency stop variable
+bool estop = true;
  
 /*------------------------- Function prototypes -------------------------*/
+
 void sendMsg();
 void readMsg();
 void serialEvent();
 void desactivateMotors();
 
 void motorUpdateCall();
+void gyroUpdateCall();
 void sendMsgCall();
 void readMsgCall();
+
+void estopCall();
 
 void manageSerialCom();
 float manageMotors(float inputUp,float inputDown, float minRange, float maxRange, float midRange);
@@ -61,7 +80,8 @@ float manageMotors(float input, float minRange, float maxRange, float midRange);
 
 //Task shenanigans
 Task MotorUpdateTask(50, TASK_FOREVER, &motorUpdateCall);
-Task SendMsgTask(50, TASK_FOREVER, &sendMsgCall);
+Task GyroUpdateCall(10, TASK_FOREVER, &gyroUpdateCall);
+Task SendMsgTask(100, TASK_FOREVER, &sendMsgCall);
 Task ReadMsgTask(0, TASK_FOREVER, &readMsgCall);
 
 Scheduler Runner;
@@ -75,26 +95,52 @@ void setup() {
     SendMsgTask.enable();
     Runner.addTask(MotorUpdateTask);
     MotorUpdateTask.enable();
+    Runner.addTask(GyroUpdateCall);
+    GyroUpdateCall.enable();
 
     //Initializing motors
     motor1.attach(PIN_MOT1); //Triggers
     motor2.attach(PIN_MOT2); //leftJoystickX_
     motor3.attach(PIN_MOT3); //leftJoystickY_
+
+    pinMode(LIM_IN, INPUT_PULLUP);    //Limit switch fully retracted
+    pinMode(LIM_OUT, INPUT_PULLUP);   //Limit switch fully extended
+
+    pinMode(ESTOP, INPUT_PULLUP);   //Emergency Stop Pin
+    attachInterrupt(ESTOP, estopCall, RISING);
  
     Serial.begin(BAUD) ; // serial communication initialisation
-   
+    
+    Wire.begin();
+    icm20600.initialize();
+    
     while(!Serial) {
 
     }
 }
  
 void loop() {
-    Runner.execute();
+        Runner.execute();
 }
 
 void motorUpdateCall(){
-    //Update motors if enabled
-    if(BackButtonAct_ == true)
+    //Check if limit switches allow motor to move
+    bool allowed = false;
+    bool limIn = digitalRead(LIM_IN);
+    bool limOut = digitalRead(LIM_OUT);
+
+    if(!limIn && !limOut){
+        allowed = true;
+    }
+    else if(limIn && (RightTrigger_ > 0)){
+        allowed = true;
+    }
+    else if(limOut && (LeftTrigger_ > 0)){
+        allowed = true;
+    }
+
+    //Update motors if enabled and allowed
+    if(BackButtonAct_ && !estop && allowed)
     {
         M1 = manageMotors(RightTrigger_,LeftTrigger_,1400,1600,1500);
         motor1.writeMicroseconds(M1);
@@ -112,6 +158,22 @@ void motorUpdateCall(){
         motor2.writeMicroseconds(1500);
         motor2.writeMicroseconds(1500);
     }
+
+    if(!digitalRead(ESTOP)){
+        estop = false;
+    }
+}
+
+void gyroUpdateCall(){
+    GyroX_ += float(icm20600.getGyroscopeX()) * 0.01;
+    GyroY_ += float(icm20600.getGyroscopeY()) * 0.01;
+    GyroZ_ += float(icm20600.getGyroscopeZ()) * 0.01;
+}
+
+void resetGyro(){
+    GyroX_ = 0.0;
+    GyroY_ = 0.0;
+    GyroZ_ = 0.0;
 }
 
 void serialEvent(){ReadMsgTask.enable();}
@@ -124,7 +186,11 @@ void readMsgCall(){
 void sendMsgCall(){
     sendMsg();
 }
- 
+
+void estopCall(){
+    estop = true;
+}
+
 /*------------------- Function definitions ----------------------*/
 
 //Motor command calculation (2 inputs)
@@ -159,19 +225,20 @@ void sendMsg(){
     // Message Elements
     doc["LeftJoystickX"]    = LeftJoystickX_    ;
     //doc["LeftJoystickY"]    = LeftJoystickY_  ;
-    //doc["RightJoystickX_"]  = RightJoystickX_ ;
-    doc["RightJoystickY_"]  = RightJoystickY_   ;
+    //doc["RightJoystickX"]  = RightJoystickX_ ;
+    doc["RightJoystickY"]  = RightJoystickY_   ;
     doc["LeftTrigger"]      = LeftTrigger_      ;
     doc["RightTrigger"]     = RightTrigger_     ;  
     /*
     doc["LeftBumper"]       = LeftBumper_       ;
     doc["RightBumper"]      = RightBumper_      ;
-   
+   */
     doc["AButton"]          = AButton_          ;
+    
+ /*
     doc["BButton"]          = BButton_          ;
     doc["XButton"]          = XButton_          ;
     doc["YButton"]          = YButton_          ;
- 
     doc["LeftThumb"]        = LeftThumb_        ;
     doc["RightThumb"]       = RightThumb_       ;
     doc["LeftDpad"]         = LeftDpad_         ;
@@ -183,17 +250,22 @@ void sendMsg(){
  
     //doc["StartButton"]      = StartButton_      ;
  
-    doc["Moteur 1"]       = M1       ;
-    doc["Moteur 2"]       = M2       ;
-    doc["Moteur 3"]       = M3       ;
-    doc["BackButtonAct"]  = BackButtonAct_      ;
-   
- 
+    doc["Moteur1"]        = M1                          ;
+    doc["Moteur2"]        = M2                          ;
+    doc["Moteur3"]        = M3                          ;
+    doc["BackButtonAct"]  = BackButtonAct_              ;
+    doc["LimitIn"]        = LimitIn_                    ;
+    doc["LimitOut"]       = LimitOut_                   ;
+    doc["GyroX"]          = GyroX_                      ;
+    doc["GyroY"]          = GyroY_                      ;
+    doc["GyroZ"]          = GyroZ_                      ;
+
+
     //Serialization
     serializeJson(doc, Serial);
  
     //Sending JSON over serial
-    Serial.println(); 
+    Serial.println();
 }
 
 //Message decoding function
@@ -256,12 +328,12 @@ void readMsg(){
         RightBumper_ = doc["RightBumper"].as<bool>();
     }
  
-   
+   */
     parse_msg = doc["AButton"];
     if(!parse_msg.isNull()){
         AButton_ = doc["AButton"].as<bool>();
     }
- 
+ /*
     parse_msg = doc["BButton"];
     if(!parse_msg.isNull()){
         BButton_ = doc["BButton"].as<bool>();
@@ -312,13 +384,14 @@ void readMsg(){
     if(!parse_msg.isNull()){
         BackButton_ = doc["BackButton"].as<bool>();
     }
-   
    /*
-    parse_msg = doc["StartButton"];
+       parse_msg = doc["StartButton"];
     if(!parse_msg.isNull()){
         StartButton_ = doc["StartButton"].as<bool>();
     }
    */
+
+   
     parse_msg = doc["BackButtonAct"];
     if(!parse_msg.isNull()){
         BackButtonAct_ = doc["BackButtonAct"].as<bool>();
