@@ -140,24 +140,29 @@ void motorUpdateCall(){
     }
 
     //Update motors if enabled and allowed
-    if(BackButtonAct_ && !estop && allowed)
+    if(BackButtonAct_ && allowed && (!estop))
     {
         M1 = manageMotors(RightTrigger_,LeftTrigger_,1400,1600,1500);
         motor1.writeMicroseconds(M1);
-    
+    }
+    //Set them to 0 speed if not enabled
+    else
+    {
+        motor1.writeMicroseconds(1500);
+    }
+
+    if(BackButtonAct_ && (!estop)){
         M2 = manageMotors(LeftJoystickX_,1450,1600,1500);
         motor2.writeMicroseconds(M2);
     
         M3 = manageMotors(RightJoystickY_,1400,1600,1500);
         motor3.writeMicroseconds(M3);
     }
-    //Set them to 0 speed if not enabled
-    else
-    {
-        motor1.writeMicroseconds(1500);
+    else{
         motor2.writeMicroseconds(1500);
         motor2.writeMicroseconds(1500);
     }
+
 
     if(!digitalRead(ESTOP)){
         estop = false;
